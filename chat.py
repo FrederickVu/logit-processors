@@ -3,7 +3,6 @@ import json
 import os
 import sys
 import importlib
-import torch
 from datetime import datetime
 
 from transformers import (
@@ -14,19 +13,17 @@ from transformers import (
     TextStreamer,
     LogitsProcessorList,
     MinPLogitsWarper,
-    TemperatureLogitsWarper,
 )
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from fewshot_registry import FEWSHOT_REGISTRY, FEWSHOT_FORMATTING
+
 
 def ensure_hf_token():
     if "HF_TOKEN" not in os.environ or not os.environ["HF_TOKEN"].strip():
-        print("HF_TOKEN environment variable not found.")
-        token = input("Please enter your Hugging Face Hub token (or leave blank to exit): ").strip()
-        if not token:
-            print("No token provided. Exiting.")
-            sys.exit(1)
-        os.environ["HF_TOKEN"] = token
+        print("HF_TOKEN environment variable not found. Run\n"
+              "export HF_TOKEN=<your token>\n"
+              "and rerun the script.")
+        sys.exit(1)
 
 def prompt_for_strategy():
     print("No sampling procedure or custom logits processor provided.")
@@ -63,50 +60,75 @@ def parse_user_choice(choice):
 
 def main():
     parser = argparse.ArgumentParser(description="Interactive model chat using text-generation pipeline")
-    parser.add_argument("--model", type=str, default="google/gemma-2-2b-it", help="Hugging Face model name")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-3B-Instruct", help="Hugging Face model name")
     parser.add_argument("--device", type=str, default="auto", help="Device: 'auto', 'cpu', 'cuda', 'mps'")
-    parser.add_argument("--log_dir", type=str, default="chat_logs", help="Directory to store conversation logs (default: chat_logs).")
-    parser.add_argument("--no_log", action="store_true", help="Do not log the conversation.")
-    parser.add_argument("--system_prompt", type=str, default=None, help="Initial context.")
     parser.add_argument("--max_new_tokens", type=int, default=1024, help="Max new tokens for responses.")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature.")
-    parser.add_argument("--do_sample", action="store_true", help="Use sampling.")
+    parser.add_argument("--do_sample", action="store_true", help="Use sampling. Defaults to False, but is set True in all expected cases.")
     parser.add_argument("--repetition_penalty", type=float, default=None, help="Repetition penalty.")
     parser.add_argument("--top_p", type=float, default=None, help="Nucleus sampling top_p.")
     parser.add_argument("--top_k", type=int, default=None, help="Top-k sampling.")
-    parser.add_argument("--min_p", type=float, default=None, help="Min-p sampling.") # Note: if temp!=1.0, need to do min_p before temp scaling
+    parser.add_argument("--min_p", type=float, default=None, help="Min-p sampling.")
+
+    parser.add_argument("--system_prompt", type=str, default=None, help="Initial context.")
+    parser.add_argument("--fewshot", type=str, default=None, help="Specify fewshot context name from registry. Defaults to None.")
+    parser.add_argument("--fewshot_num", type=int, default=None, help="Specify number of fewshot examples. Defaults to all.")
+
+    parser.add_argument("--log", action="store_true", help="Log the conversation. Defaults to False.")
+    parser.add_argument("--log_dir", type=str, default="chat_logs", help="Directory to store conversation logs (default: chat_logs).")
     parser.add_argument("--no_history_log", action="store_true", help="If set, only store event in logs.")
     parser.add_argument("--no_stream", action="store_true", help="If set, do not attempt to stream output. By default we try streaming.")
 
+    parser.add_argument("--analysis", action="store_true", help="Log logit processor data")
+
     parser.add_argument("--logits_processor", type=str, default=None, help="Custom logits processor class in format module.ClassName")
+
+    # Similarity processor args
     parser.add_argument("--p_trusted", type=float, default=.5, help="Min p cutoff for trusted tokens for similarity processor.")
+    parser.add_argument("--p_min", type=float, default=.1, help="Final min p cutoff for similarity processor.")
     parser.add_argument("--sim_threshold", type=float, default=None, help="Similarity threshold for SimilarityProcessor.")
     parser.add_argument("--sim_alpha", type=float, default=1.0, help="Similarity scaling hyperparameter for SimilarityProcessor.")
 
+    # BetterMinp processor args
+    parser.add_argument("--p", type=float, default=0.05, help="p value for better min-p processor.")
+
+    # LastDrop processor args
+    parser.add_argument("--threshold", type=float, default=0.2, help="Threshold logit difference for LastDropProcessor.")
+    parser.add_argument("--k", type=int, default=100, help="k value for better last_drop processor.")
+
+    # LogitRatio processor args
     parser.add_argument("--ratio_threshold", type=float, default=1.01, help="Logit ratio threshold for LogitRatioProcessor.")
     args = parser.parse_args()
 
     ensure_hf_token()
 
-    model_name = args.model
-    device = args.device
-    log_dir = args.log_dir
-    no_log = args.no_log
+    ##################################################
+    # Load system prompt and fewshot messages, if any
+    ##################################################
+    base_context = []
     system_prompt = args.system_prompt
-    max_new_tokens = args.max_new_tokens
-    temperature = args.temperature
-    do_sample = args.do_sample
-    repetition_penalty = args.repetition_penalty
-    no_history_log = args.no_history_log
-    no_stream = args.no_stream
+    if system_prompt and system_prompt.strip():
+       base_context.append({"role": "system", "content": system_prompt.strip()})
+
+    fewshot_name = args.fewshot
+    fewshot_num = args.fewshot_num
+    fewshot_messages = []
+    if fewshot_name is not None:
+        if fewshot_name in FEWSHOT_REGISTRY:
+            fewshot_messages = FEWSHOT_REGISTRY[fewshot_name](fewshot_num)
+            base_context.extend(fewshot_messages)
+        else:
+            print(f"Fewshot name {fewshot_name} is not in FEWSHOT_REGISTRY.")
+            sys.exit(1)
+            
+    ##################################################
+    # Determine sampling procedure/logits processor
+    ##################################################
+    logits_processor_spec = args.logits_processor
     top_p = args.top_p
     top_k = args.top_k
     min_p = args.min_p
-    logits_processor_spec = args.logits_processor
-    p_trusted = args.p_trusted
-    sim_threshold = args.sim_threshold
-    sim_alpha = args.sim_alpha
-
+    do_sample = args.do_sample
     strategies = [top_p, top_k, min_p, logits_processor_spec]
     provided_strategy = any([strat is not None for strat in strategies])
 
@@ -126,91 +148,29 @@ def main():
     if provided_strategy and not do_sample:
         do_sample = True
 
-    if not no_log:
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
-        log_file = open(log_path, "a", encoding="utf-8")
-    else:
-        log_path = None
-        log_file = None
-
-    def log_event(event_data):
-        if log_file:
-            log_file.write(json.dumps(event_data, ensure_ascii=False) + "\n")
-            log_file.flush()
-
-    print(f"Loading model '{model_name}' on device='{device}'...")
+    ##################################################
+    # Load model, tokenizer, and pipeline
+    ##################################################
+    model_name = args.model
+    device = args.device
+    print(f"Loading model '{model_name}'...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, device_map=device)
-
-    # Patching side cases in text generation.
-    if not no_stream:
-        streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-    else:
-        streamer = None
-
-    # Create custom list of LogitsProcessor objects for .generate or pipeline call
-    # Note: need to manually order list of processors
-    # For some reason, temperature scaling defaults to being first in HF, so change it
-    processors = LogitsProcessorList()
-    if logits_processor_spec:
-        module_name, class_name = logits_processor_spec.rsplit(".", 1)
-        sys.path.append(os.path.join(os.getcwd(), "logits_processors"))
-        mod = importlib.import_module(module_name)
-        cls = getattr(mod, class_name)
-
-        if class_name == "SimilarityProcessor":
-            if not sim_threshold:
-                print("No sim_threshold for similarity logits processor provided.")
-                print("Enter a valid float for sim_threshold.")
-                choice = input("sim_threshold = ").strip()
-                if not choice:
-                    print("No choice made. Exiting.")
-                sys.exit(1)
-                sim_threshold = float(choice)
-            if not sim_alpha:
-                print("No sim_threshold for similarity logits processor provided.")
-                print("Enter a valid float for sim_threshold.")
-                choice = input("sim_threshold = ").strip()
-                if not choice:
-                    print("No choice made. Exiting.")
-                sys.exit(1)
-                sim_alpha = float(choice)
-                custom_processor = cls(
-                    p_trusted=p_trusted,
-                    alpha=sim_alpha, 
-                    sim_threshold=sim_threshold,
-                    embedding=model.lm_head.weight,
-                )
-
-        else:
-            custom_processor = cls()
-        processors.append(custom_processor)
-
+    no_stream = args.no_stream
+    streamer = (TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+                if not no_stream else None)
     gen_kwargs = {
-        "max_new_tokens": max_new_tokens,
-        "temperature": temperature,
-        "do_sample": do_sample,
-        "repetition_penalty": repetition_penalty,
-        "use_cache": True
+        "max_new_tokens": args.max_new_tokens,
+        "do_sample": args.do_sample,
+        "temperature": args.temperature,
+        "repetition_penalty": args.repetition_penalty,
+        "top_p": top_p,
+        "top_k": top_k,
     }
-    if top_p is not None:
-        gen_kwargs["top_p"] = top_p
-    if top_k is not None:
-        gen_kwargs["top_k"] = top_k
-    if min_p is not None:
-        if temperature != 1.0:
-            # Place temperature warper after min-p filter in processor list
-            processors.append(MinPLogitsWarper(min_p=min_p))
-            processors.append(TemperatureLogitsWarper(temperature=temperature))
-            gen_kwargs['temperatre']=1.0
-        else:
-            gen_kwargs["min_p"] = min_p
     if tokenizer.pad_token_id is None:
         gen_kwargs["pad_token_id"] = tokenizer.eos_token_id
-
+    
     gen_config = GenerationConfig(**gen_kwargs)
-
     text_gen_pipeline = pipeline(
         "text-generation",
         model=model,
@@ -220,6 +180,7 @@ def main():
         streamer=streamer,
         generation_config=gen_config
     )
+    # Note: min_p added in logits processor list afterwards. 
 
     print("Model loaded successfully!\n")
     print("Commands:\n")
@@ -235,37 +196,126 @@ def main():
     print(" - 'show_params <ProcessorClassName>' to show current params on logit processor.")
     print(" - 'exit' or 'quit' to end the session.\n")
 
+    ##################################################
+    # Load logits processor, if any
+    ##################################################
+    # Note: Need to manually order list of processors. 
+    # For some reason, temperature scaling defaults to being 
+    # before min_p in HF. We put it afterwards. 
+    processors = LogitsProcessorList()
+    custom_processor = None
+    if logits_processor_spec:
+        analysis_mode = args.analysis
+        module_name, class_name = logits_processor_spec.rsplit(".", 1)
+        sys.path.append(os.path.join(os.getcwd(), "logits_processors"))
+        mod = importlib.import_module(module_name)
+        cls = getattr(mod, class_name)
+        match class_name:
+            case "SimilarityProcessor":
+                sim_threshold = args.sim_threshold
+                sim_alpha = args.sim_alpha
+                p_trusted = args.p_trusted
+                p_min = args.p_min
+                if not sim_alpha:
+                    print("No sim_threshold for similarity logits processor provided.")
+                    print("Enter a valid float for sim_threshold.")
+                    choice = input("sim_threshold = ").strip()
+                    if not choice:
+                        print("No choice made. Exiting.")
+                    sys.exit(1)
+                    sim_alpha = float(choice)
+                custom_processor = cls(
+                    p_trusted=p_trusted,
+                    p_min=p_min,
+                    alpha=sim_alpha, 
+                    sim_threshold=sim_threshold,
+                    embedding=model.lm_head.weight,
+                    analysis_mode=analysis_mode,
+                    model_name=model_name
+                )
+
+            case "BetterMinpProcessor":
+                k = args.k
+                p = args.p
+                custom_processor = cls(
+                    k=k,
+                    p=p,
+                    analysis_mode=analysis_mode,
+                    model_name=model_name
+                )
+
+            case "LastDropProcessor":
+                k = args.k
+                threshold=args.threshold
+                custom_processor = cls(
+                    k=k,
+                    threshold=threshold,
+                    analysis_mode=analysis_mode,
+                    model_name=model_name
+                )
+
+            case _:
+                custom_processor = cls()
+
+        processors.append(custom_processor)
+    if min_p:
+        processors.append(MinPLogitsWarper(min_p=min_p))
+
+    ##################################################
+    # Set up optional chat logging
+    ##################################################
+    log = args.log
+    log_dir = args.log_dir
+    no_history_log = args.no_history_log
+    if log:
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
+        log_file = open(log_path, "a", encoding="utf-8")
+    else:
+        log_file = None
     logged_params = {}
     for k, v in gen_kwargs.items():
-        if k == "do_sample" and v is False:
+        if k == "do_sample" and v:
             continue
-        if k == "use_cache" and v is True:
-            continue
-        if k == "max_new_tokens" and v == 256:
+        if k == "max_new_tokens":
             continue
         if k == "temperature" and v == 1.0:
             continue
         if k == "repetition_penalty" and v == 1.0:
             continue
         logged_params[k] = v
+    if min_p:
+        logged_params["min_p"] = min_p
 
+    def log_event(event_data):
+        if log_file:
+            log_file.write(json.dumps(event_data, ensure_ascii=False) + "\n")
+            log_file.flush()
     event_data = {
         "event": "session_start",
         "model_name": model_name,
-        "system_prompt_included_as_user": bool(system_prompt)
+        "system_prompt_included_as_user": (system_prompt is not None)
     }
     if logged_params:
         event_data["params"] = logged_params
     if logits_processor_spec:
         event_data["logits_processor"] = logits_processor_spec
-
     log_event(event_data)
 
+    ##################################################
+    # Helper functions for managing chat
+    ##################################################
     messages = []
-    if system_prompt and system_prompt.strip():
-        messages.append({"role": "user", "content": system_prompt.strip()})
-
     current_version_id = 0
+
+    def generate_assistant(msg_list):
+        full_context = base_context + msg_list
+        outputs = text_gen_pipeline(
+            text_inputs=full_context, 
+            logits_processor=processors if processors else None
+        )
+        assistant_content = outputs[0]["generated_text"]
+        return {"role": "assistant", "content": assistant_content}
 
     def get_turns():
         turns = []
@@ -296,11 +346,6 @@ def main():
             else:
                 print("  Assistant: [No response yet]")
             print("")
-
-    def generate_assistant(msg_list):
-        outputs = text_gen_pipeline(text_inputs=msg_list, logits_processor=processors if processors else None)
-        assistant_content = outputs[0]["generated_text"]
-        return {"role": "assistant", "content": assistant_content}
 
     def regenerate_turn(turn_id):
         nonlocal current_version_id
@@ -371,8 +416,6 @@ def main():
             # "messages": None if no_history_log else messages
         })
 
-        print("Model:", assistant_msg["content"], "\n")
-
     def revert_to(turn_id):
         all_turns = get_turns()
         if turn_id < 0 or turn_id >= len(all_turns):
@@ -397,7 +440,7 @@ def main():
         print(f"Conversation reverted to turn {turn_id}.")
 
     def show_versions(turn_id):
-        if no_log or not log_file:
+        if not log or not log_file:
             print("No log file available for version tracking.")
             return
         log_file.flush()
@@ -409,7 +452,13 @@ def main():
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
                 data = json.loads(line.strip())
-                if data.get("turn_id") == turn_id and ("assistant" in data or data.get("event") in ["edit","regenerate","turn_completed"]):
+                if (
+                    data.get("turn_id") == turn_id
+                    and (
+                        "assistant" in data 
+                        or data.get("event") in {"edit","regenerate","turn_completed"}
+                    )
+                ):
                     versions.append(data)
 
         if not versions:
@@ -423,6 +472,7 @@ def main():
             usr = v.get("user") or v.get("new_user")
             assistant = v.get("assistant")
             print(f" - version_id={ver_id}, event={ev}, user={usr}, assistant={assistant}")
+
 
     def show_processor_params(processor_class_name: str):
         """
@@ -474,12 +524,15 @@ def main():
             "model_name": model_name
         })
 
+    ##################################################
+    # Main chat loop
+    ##################################################
     while True:
         user_input = input("User: ").strip()
         if user_input.lower() in ["exit", "quit"]:
             print("Exiting the conversation. Goodbye!")
             break
-        
+
         if user_input.lower().startswith("show_params "):
             # e.g. "show_params LogitRatioProcessor"
             parts = user_input.split()
@@ -505,10 +558,10 @@ def main():
                     for proc in processors:
                         if hasattr(proc,"set_param"):
                             try:
-                                proc.set_param(pkey,pval)
+                                changed = proc.set_param(pkey,pval)
                                 log_event({"event":"set_params","processor":proc.__class__.__name__,"param":pkey,"value":pval})
-                                print(f"Set {pkey}={pval} on {proc.__class__.__name__}")
-                                changed=True
+                                if changed:
+                                    print(f"Set {pkey}={pval} on {proc.__class__.__name__}")
                             except ValueError:
                                 pass
                     if not changed:
@@ -546,6 +599,16 @@ def main():
                 print("Usage: edit N")
             continue
 
+        if user_input.lower().startswith("clear analysis"):
+            """
+            Delete jsonl log for conversation if in analysis mode
+            """
+            if custom_processor and custom_processor.log_file is not None:
+                custom_processor.log_file.close()
+                custom_processor.log_file = open(custom_processor.log_file_path, "w", encoding="utf-8")
+            continue
+
+
         if user_input.lower().startswith("revert "):
             parts = user_input.split()
             if len(parts) == 2:
@@ -558,9 +621,11 @@ def main():
                 print("Usage: revert N")
             continue
 
+
         if user_input.lower() == "history":
             print_history()
             continue
+
 
         if user_input.lower().startswith("versions "):
             parts = user_input.split()
@@ -574,6 +639,7 @@ def main():
                 print("Usage: versions N")
             continue
 
+
         if user_input.lower().startswith("switch_model "):
             parts = user_input.split(" ", 1)
             if len(parts) == 2:
@@ -583,9 +649,14 @@ def main():
                 print("Usage: switch_model <model_name>")
             continue
 
+
         current_version_id += 1
         new_version_id = current_version_id
 
+        if fewshot_name is not None:
+            formatting_fn = FEWSHOT_FORMATTING[fewshot_name]
+            user_input = formatting_fn(user_input)
+            
         messages.append({"role": "user", "content": user_input})
         assistant_msg = generate_assistant(messages)
         messages.append(assistant_msg)
