@@ -9,7 +9,7 @@ import math
 
 from transformers import AutoTokenizer
 
-plt.rcParams['font.family'] = ['Droid Sans Fallback', 'DejaVu Sans', 'Noto Mono', 'SimHei']
+plt.rcParams['font.family'] = ['Droid Sans Fallback', 'DejaVu Sans', 'Noto Mono']
 
 BASE_DIR = "analysis/last_drop"
 
