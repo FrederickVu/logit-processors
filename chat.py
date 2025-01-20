@@ -29,8 +29,8 @@ def prompt_for_strategy():
     print("No sampling procedure or custom logits processor provided.")
     resp = input("Do you want to specify one now? (y/n) ").strip().lower()
     if resp.startswith('n'):
-        print("No strategy chosen. Exiting.")
-        sys.exit(1)
+        print("No strategy chosen. Continuing with greedy sampling.")
+        return None
     print("Enter a sampling parameter or custom processor.")
     print("Examples: 'top_p=0.9', 'top_k=50', 'min_p=0.05', or 'logits_processor=module.ClassName'")
     choice = input("Your choice: ").strip()
@@ -40,6 +40,8 @@ def prompt_for_strategy():
     return choice
 
 def parse_user_choice(choice):
+    if choice is None:
+        return {}
     if '=' not in choice:
         print("Invalid format. Exiting.")
         sys.exit(1)
@@ -63,7 +65,7 @@ def main():
     parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-3B-Instruct", help="Hugging Face model name")
     parser.add_argument("--device", type=str, default="auto", help="Device: 'auto', 'cpu', 'cuda', 'mps'")
     parser.add_argument("--max_new_tokens", type=int, default=1024, help="Max new tokens for responses.")
-    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature.")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Defaults to 1.0, but sets to None if no sampling/processing specified.")
     parser.add_argument("--do_sample", action="store_true", help="Use sampling. Defaults to False, but is set True in all expected cases.")
     parser.add_argument("--repetition_penalty", type=float, default=None, help="Repetition penalty.")
     parser.add_argument("--top_p", type=float, default=None, help="Nucleus sampling top_p.")
@@ -161,8 +163,8 @@ def main():
                 if not no_stream else None)
     gen_kwargs = {
         "max_new_tokens": args.max_new_tokens,
-        "do_sample": args.do_sample,
-        "temperature": args.temperature,
+        "do_sample": do_sample,
+        "temperature": args.temperature if do_sample else None,
         "repetition_penalty": args.repetition_penalty,
         "top_p": top_p,
         "top_k": top_k,
@@ -656,7 +658,7 @@ def main():
         if fewshot_name is not None:
             formatting_fn = FEWSHOT_FORMATTING[fewshot_name]
             user_input = formatting_fn(user_input)
-            
+
         messages.append({"role": "user", "content": user_input})
         assistant_msg = generate_assistant(messages)
         messages.append(assistant_msg)
