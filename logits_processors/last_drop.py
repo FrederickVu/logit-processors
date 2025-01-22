@@ -1,6 +1,6 @@
 import torch
 import json
-from .base_processor import BaseCustomProcessor
+from base_processor import BaseCustomProcessor
 from scipy.stats import entropy
 
 class LastDropProcessor(BaseCustomProcessor):
