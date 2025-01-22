@@ -1,0 +1,14 @@
+{
+    "google/gemma-2-2b-it": {
+      "user_marker": "<start_of_turn>user",
+      "assistant_marker": "<end_of_turn>\n<start_of_turn>model"
+    },
+    "meta-llama/Llama-3.2-3B-Instruct": {
+      "user_marker": "<|eot_id|><|start_header_id|>user<|end_header_id|>",
+      "assistant_marker": "<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
+    },
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B": {
+      "user_marker": "\u2581of\u2581sentence\uff5c><\uff5cUser\uff5c>",
+      "assistant_marker": "<\uff5cAssistant\uff5c>"
+    }
+  }
