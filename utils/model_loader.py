@@ -32,6 +32,17 @@ def load_chat_pipeline(args):
     Returns:
         text_gen_pipeline: A transformers pipeline for text generation
     """
+    logits_processor_spec = args.logits_processor
+    top_p = args.top_p
+    top_k = args.top_k
+    min_p = args.min_p
+    do_sample = args.do_sample
+    strategies = [top_p, top_k, min_p, logits_processor_spec]
+    provided_strategy = any([strat is not None for strat in strategies])
+
+    if provided_strategy and not do_sample:
+        do_sample = True
+    
     model_name = args.model
     device = args.device
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -43,7 +54,6 @@ def load_chat_pipeline(args):
     streamer = (TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
                 if not no_stream else None)
     
-    do_sample = args.do_sample
     gen_kwargs = {
         "max_new_tokens": args.max_new_tokens,
         "pad_token_id": tokenizer.pad_token_id,
