@@ -167,6 +167,17 @@ class Chat:
         params = processor.get_param_names()
         for key, value in params.items():
             print(f"{key} = {value}")
+
+    def toggle_analysis(self):
+        if self.processors == None:
+            print("No processor was initialized. Please restart "
+                  "chat with a valid processor for analysis.")
+            return
+        processor = self.processors[0]
+        processor.analysis_mode ^= True
+        # If activating analysis_mode for first time, set up directory
+        if not processor.log_file:
+            processor._setup_analysis_directory()
         
     def clear_analysis(self):
         # Close and reopen the log file in write mode to clear it
