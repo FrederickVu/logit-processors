@@ -23,6 +23,7 @@ def main():
     print(" - 'history' to print the current conversation.")
     print(" - 'set_params param1=val1 param2=val2' to update params on logit processors.")
     print(" - 'show_params' to show current params on logit processor.")
+    print(" - '--analysis' to toggle analysis mode when using a valid processor.")
     print(" - 'clear analysis' to clear the analysis log.")
     print(" - 'FEWSHOT <input_text>' to format the input for fewshot learning.")
     print(" - 'exit' or 'quit' to end the session.\n")
@@ -100,6 +101,10 @@ def main():
 
         if user_input.startswith("show_params"):
             chat.show_params()
+            continue
+
+        if user_input == "--analysis":
+            chat.toggle_analysis()
             continue
 
         if user_input.lower() == "clear analysis":
