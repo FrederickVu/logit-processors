@@ -77,6 +77,7 @@ Inside the chat loop, you can type:
 - **`show_params`**: Display the current parameters for a given custom logit processor class.
 - **`set_params param=value ...`**: Adjust logit processor parameters on the fly.
 - **`FEWSHOT ...`**: Format your prompt according to a specified fewshot template, if available.
+- **`--analysis`**: Toggle analysis mode if using a processor with logging capabilities. 
 - **`clear analysis`**: If `analysis_mode` is active, clear the JSONL logs for the currently loaded processor.
 - **`exit`** / **`quit`**: End the session.
 
@@ -99,7 +100,7 @@ and may additionally view and set new parameter values via `show_params` and `se
 ## Plotting data for analysis
 1. Define `_write_log` in your custom processor class, following the template `logit_processor_template.py` in `logits_processors/`.
 2. Define a custom plotting function in `plotting_functions/<plotter_for_my_processor>.py`
-3. Run `chat.py` with the `--analysis` flag to log data in `analyses/<processor_name>/<model>_<timestamp>/`
+3. Run `chat.py` with the `--analysis` flag, or toggle it on during the chat, to log data in `analyses/<processor_name>/<model>_<timestamp>/`
 4. Run 
   ```bash
   python analysis_script.py --processor_module <processor_name> --plot_fn <plotter_file>.<my_fn> --max_calls 12345679
